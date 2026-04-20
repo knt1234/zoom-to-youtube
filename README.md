@@ -1,12 +1,13 @@
 # Zoom録画 → YouTube 自動アップロードツール
 
-Googleスプレッドシートに記載されたZoom録画のダウンロードリンクを読み取り、指定のYouTubeチャンネルへ自動アップロードするツールです。
+Zoom録画をGoogleスプレッドシートに自動転記し、指定のYouTubeチャンネルへ自動アップロードするツールです。ZapierなどのサービスなしでZoom APIを直接使用します。
 
 ---
 
 ## このツールでできること・できないこと
 
 ### できること
+- **Zoom APIでスプレッドシートに自動転記**（Zapier不要）
 - スプレッドシートのリンクからZoom録画を自動ダウンロード
 - 指定したYouTubeチャンネルへ自動アップロード（限定公開）
 - アップロード完了後、スプレッドシートにYouTube URLと「済」を自動記入
@@ -242,6 +243,48 @@ python3 ~/Documents/movie-upload/upload.py sheet
 ```
 
 スプレッドシートを開いてK列にドロップダウンが追加されていれば成功です。
+
+---
+
+## Zoom API連携の設定（任意・推奨）
+
+Zoom録画をスプレッドシートに自動転記する機能です。設定しておくと、毎回手動でリンクを貼る手間がなくなります。
+
+### STEP A：Zoom Marketplace でアプリを作成
+
+1. [Zoom Marketplace](https://marketplace.zoom.us/) にZoomアカウントでログイン
+2. 右上「**Develop**」→「**Build App**」をクリック
+3. **「Server-to-Server OAuth」** を選択して「Create」
+4. アプリ名（例：`zoom-auto-sync`）を入力して作成
+5. **App Credentials** 画面に表示される以下をメモする
+   - **Account ID**
+   - **Client ID**
+   - **Client Secret**
+6. **Scopes** タブで以下を追加する
+   - `cloud_recording:read:list_user_recordings:admin`
+7. **Activation** でアプリを有効化する
+
+### STEP B：Zoom設定を保存
+
+```
+python3 ~/Documents/movie-upload/upload.py zoom-setup
+```
+
+Account ID・Client ID・Client Secret を入力して完了。
+
+### STEP C：Zoom録画をスプレッドシートに同期
+
+```
+python3 ~/Documents/movie-upload/upload.py sync
+```
+
+過去30日間の録画が自動的にスプレッドシートに転記されます。
+- A列：録画日
+- D列：Zoom共有リンク
+- E列：ダウンロードリンク（自動入力）
+- I列：ミーティング名（YouTubeタイトルとして使用）
+
+転記後、K列にタグを入力してからアップロードを実行してください。
 
 ---
 

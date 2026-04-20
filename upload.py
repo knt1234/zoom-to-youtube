@@ -3,10 +3,12 @@
 Zoom録画 → YouTube 自動アップロードツール
 
 Usage:
-  python3 upload.py config   - 設定ウィザードを起動（初回）
-  python3 upload.py setup    - YouTube/Sheets の認証セットアップ
-  python3 upload.py sheet    - スプレッドシートにタグのドロップダウンを追加
-  python3 upload.py          - アップロード実行
+  python3 upload.py config      - 設定ウィザードを起動（初回）
+  python3 upload.py setup       - YouTube/Sheets の認証セットアップ
+  python3 upload.py sheet       - スプレッドシートにタグのドロップダウンを追加
+  python3 upload.py zoom-setup  - Zoom API設定（Server-to-Server OAuth）
+  python3 upload.py sync        - Zoom録画をスプレッドシートに自動転記
+  python3 upload.py             - アップロード実行
 """
 
 import os
@@ -15,6 +17,7 @@ import json
 import pickle
 import tempfile
 import re
+import base64
 import requests
 from datetime import datetime, timezone, timedelta
 from googleapiclient.discovery import build
@@ -160,6 +163,17 @@ def setup_auth(cfg):
     print("次回から  python3 upload.py  でアップロードできます。\n")
 
 
+# ── スプレッドシート ユーティリティ ─────────────────────────
+
+def get_sheet_name(sheets_service, spreadsheet_id, sheet_id):
+    """sheet_id（数値）からシート名を取得"""
+    meta = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    for sheet in meta.get("sheets", []):
+        if sheet["properties"]["sheetId"] == sheet_id:
+            return sheet["properties"]["title"]
+    raise ValueError(f"シートID {sheet_id} が見つかりません")
+
+
 # ── スプレッドシートのドロップダウン設定 ────────────────────
 
 def setup_sheet(cfg):
@@ -208,12 +222,165 @@ def setup_sheet(cfg):
     print(f"✓ タグ列にドロップダウンを追加しました（{' / '.join(tags)}）")
 
 
+# ── Zoom API ────────────────────────────────────────────────
+
+def setup_zoom(cfg):
+    print("=== Zoom API 設定 ===\n")
+    print("Zoom Marketplace で Server-to-Server OAuth アプリを作成し、")
+    print("以下の情報を入力してください。\n")
+
+    account_id    = input("Account ID    : ").strip()
+    client_id     = input("Client ID     : ").strip()
+    client_secret = input("Client Secret : ").strip()
+    days = input("何日前まで遡って録画を取得しますか？（デフォルト: 30）: ").strip()
+    days = int(days) if days.isdigit() else 30
+
+    cfg["zoom"] = {
+        "account_id":    account_id,
+        "client_id":     client_id,
+        "client_secret": client_secret,
+        "sync_days":     days,
+    }
+    save_config(cfg)
+    print("\n✓ Zoom設定を保存しました。")
+    print("次のステップ: python3 upload.py sync\n")
+
+
+def get_zoom_token(zoom_cfg):
+    credentials = base64.b64encode(
+        f"{zoom_cfg['client_id']}:{zoom_cfg['client_secret']}".encode()
+    ).decode()
+    resp = requests.post(
+        "https://zoom.us/oauth/token",
+        params={"grant_type": "account_credentials", "account_id": zoom_cfg["account_id"]},
+        headers={"Authorization": f"Basic {credentials}"},
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+def fetch_zoom_recordings(access_token, from_date, to_date):
+    resp = requests.get(
+        "https://api.zoom.us/v2/users/me/recordings",
+        params={"from": from_date, "to": to_date, "page_size": 300},
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def pick_mp4_file(recording_files):
+    """優先順位: shared_screen_with_speaker_view > active_speaker > gallery_view > 任意MP4"""
+    for priority in ["shared_screen_with_speaker_view", "active_speaker", "gallery_view"]:
+        for f in recording_files:
+            if f.get("file_type") == "MP4" and f.get("recording_type") == priority:
+                return f
+    for f in recording_files:
+        if f.get("file_type") == "MP4":
+            return f
+    return None
+
+
+def sync_zoom(cfg):
+    if "zoom" not in cfg:
+        print("Zoom設定が未設定です。先に以下を実行してください：")
+        print("  python3 upload.py zoom-setup")
+        sys.exit(1)
+
+    zoom_cfg = cfg["zoom"]
+    print("Zoom アクセストークンを取得中...")
+    access_token = get_zoom_token(zoom_cfg)
+
+    days = zoom_cfg.get("sync_days", 30)
+    to_date   = datetime.now().strftime("%Y-%m-%d")
+    from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    print(f"{from_date} 〜 {to_date} の録画を取得中...")
+
+    data = fetch_zoom_recordings(access_token, from_date, to_date)
+    meetings = data.get("meetings", [])
+    if not meetings:
+        print("録画が見つかりませんでした。")
+        return
+
+    print(f"{len(meetings)}件のミーティングが見つかりました。\n")
+
+    sheets_creds   = get_credentials("token_sheets.pkl", SHEETS_SCOPES)
+    sheets_service = build("sheets", "v4", credentials=sheets_creds)
+    sheet_name     = get_sheet_name(sheets_service, cfg["spreadsheet_id"], cfg["sheet_id"])
+
+    cols     = cfg["columns"]
+    last_col = chr(ord("A") + cols["uploaded_at"])
+    result   = sheets_service.spreadsheets().values().get(
+        spreadsheetId=cfg["spreadsheet_id"],
+        range=f"'{sheet_name}'!A:{last_col}",
+    ).execute()
+    existing_rows = result.get("values", [])
+
+    # 既存のダウンロードURL（ベース部分）を収集して重複チェック
+    existing_urls = set()
+    for row in existing_rows[1:]:
+        if len(row) > cols["download_url"] and row[cols["download_url"]]:
+            existing_urls.add(row[cols["download_url"]].split("?")[0])
+
+    share_url_col = cols["download_url"] - 1  # D列（共有リンク）
+    num_cols      = cols["uploaded_at"] + 1
+    added         = 0
+
+    for meeting in meetings:
+        video_file = pick_mp4_file(meeting.get("recording_files", []))
+        if not video_file:
+            continue
+
+        download_url = video_file.get("download_url", "")
+        if not download_url or download_url.split("?")[0] in existing_urls:
+            continue
+
+        start_time     = meeting.get("start_time", "")
+        date_str       = start_time[:10] if start_time else ""
+        try:
+            date_fmt = datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y/%m/%d")
+        except ValueError:
+            date_fmt = date_str
+
+        topic     = meeting.get("topic", "")
+        share_url = meeting.get("share_url", "")
+
+        new_row = [""] * num_cols
+        new_row[0]                      = date_fmt       # A: 日付
+        new_row[share_url_col]          = share_url      # D: 共有リンク
+        new_row[cols["download_url"]]   = download_url   # E: ダウンロードリンク（トークンなし）
+        new_row[cols["date_for_title"]] = date_fmt       # H: 日付（タイトル用）
+        new_row[cols["title"]]          = topic          # I: 動画タイトル
+
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=cfg["spreadsheet_id"],
+            range=f"'{sheet_name}'!A:A",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": [new_row]},
+        ).execute()
+
+        print(f"  追加: {date_fmt} {topic}")
+        existing_urls.add(download_url.split("?")[0])
+        added += 1
+
+    print(f"\n✓ {added}件を追加しました。")
+    if added > 0:
+        print("K列にタグを入力してから  python3 upload.py  でアップロードできます。")
+
+
 # ── 動画のダウンロード・アップロード ────────────────────────
 
-def download_video(url, output_path):
+def download_video(url, output_path, auth_headers=None):
     headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(url, stream=True, headers=headers, allow_redirects=True)
+    if auth_headers:
+        headers.update(auth_headers)
+    response = requests.get(url, stream=True, headers=headers, allow_redirects=True, timeout=30)
     response.raise_for_status()
+
+    content_type = response.headers.get("content-type", "")
+    if "text/html" in content_type:
+        raise ValueError(f"動画ではなくHTMLが返されました（認証エラーの可能性）: {url}")
 
     total = int(response.headers.get("content-length", 0))
     downloaded = 0
@@ -227,6 +394,10 @@ def download_video(url, output_path):
                 print(f"\r  ダウンロード中... {pct}%", end="", flush=True)
 
     print("\r  ダウンロード完了              ")
+
+    file_size = os.path.getsize(output_path)
+    if file_size < 1024 * 100:  # 100KB未満は異常
+        raise ValueError(f"ダウンロードしたファイルが小さすぎます（{file_size}バイト）。URLを確認してください。")
 
 
 def upload_to_youtube(creds, title, video_path):
@@ -276,7 +447,7 @@ def delete_video(creds, video_id):
     youtube.videos().delete(id=video_id).execute()
 
 
-def do_upload(sheets_service, cfg, row_index, date_h, title_i, tag, download_url, token_file):
+def do_upload(sheets_service, cfg, row_index, date_h, title_i, tag, download_url, token_file, auth_headers=None, sheet_name=None):
     cols = cfg["columns"]
     youtube_creds = get_credentials(token_file, YOUTUBE_SCOPES)
 
@@ -284,7 +455,7 @@ def do_upload(sheets_service, cfg, row_index, date_h, title_i, tag, download_url
         tmp_path = tmp.name
 
     try:
-        download_video(download_url, tmp_path)
+        download_video(download_url, tmp_path, auth_headers=auth_headers)
 
         video_title = f"{date_h} {title_i}".strip()
         yt_url = upload_to_youtube(youtube_creds, video_title, tmp_path)
@@ -295,10 +466,11 @@ def do_upload(sheets_service, cfg, row_index, date_h, title_i, tag, download_url
         chk_col = chr(ord("A") + cols["check"])
         upl_col = chr(ord("A") + cols["uploaded_at"])
 
+        prefix = f"'{sheet_name}'!" if sheet_name else ""
         for col, val in [(yt_col, yt_url), (chk_col, "済"), (upl_col, now_str)]:
             sheets_service.spreadsheets().values().update(
                 spreadsheetId=cfg["spreadsheet_id"],
-                range=f"{col}{row_index}",
+                range=f"{prefix}{col}{row_index}",
                 valueInputOption="RAW",
                 body={"values": [[val]]},
             ).execute()
@@ -330,19 +502,21 @@ def main():
 
     sheets_creds = get_credentials("token_sheets.pkl", SHEETS_SCOPES)
     sheets_service = build("sheets", "v4", credentials=sheets_creds)
+    sheet_name = get_sheet_name(sheets_service, cfg["spreadsheet_id"], cfg["sheet_id"])
 
     # 読み込む最終列をuploaded_atの列に合わせる
     last_col = chr(ord("A") + cols["uploaded_at"])
     print("スプレッドシートを読み込み中...")
     result = sheets_service.spreadsheets().values().get(
         spreadsheetId=cfg["spreadsheet_id"],
-        range=f"A:{last_col}",
+        range=f"'{sheet_name}'!A:{last_col}",
     ).execute()
 
     rows = result.get("values", [])
     upload_count = 0
     now = datetime.now(timezone(timedelta(hours=9)))
     total_cols = cols["uploaded_at"] + 1
+    zoom_token = None  # Zoom URLのダウンロード時に必要なら遅延取得
 
     for i, row in enumerate(rows[1:], 2):
         if upload_count >= max_uploads:
@@ -361,11 +535,22 @@ def main():
         uploaded_at   = row[cols["uploaded_at"]]
 
         if not title_i or not download_url:
+            if title_i or download_url:  # どちらか片方だけある行は報告
+                print(f"  [行{i}] スキップ: タイトル={repr(title_i)} / URL={repr(download_url[:40] if download_url else '')}")
             continue
         if not tag or tag not in tag_to_channel:
+            print(f"  [行{i}] スキップ: タグ={repr(tag)}（未設定または不一致）")
             continue
 
         ch = tag_to_channel[tag]
+
+        # Zoom URLはダウンロード時に認証が必要なためトークンを取得（1回だけ）
+        auth_headers = None
+        if "zoom.us" in download_url and "zoom" in cfg:
+            if zoom_token is None:
+                print("Zoom アクセストークンを取得中...")
+                zoom_token = get_zoom_token(cfg["zoom"])
+            auth_headers = {"Authorization": f"Bearer {zoom_token}"}
 
         # アップロード済み → 24時間経っても処理中なら再アップロード
         if check == "済" and youtube_link and uploaded_at:
@@ -392,15 +577,16 @@ def main():
 
                 yt_col  = chr(ord("A") + cols["youtube_link"])
                 chk_col = chr(ord("A") + cols["check"])
+                prefix  = f"'{sheet_name}'!"
                 for col in [yt_col, chk_col]:
                     sheets_service.spreadsheets().values().update(
                         spreadsheetId=cfg["spreadsheet_id"],
-                        range=f"{col}{i}",
+                        range=f"{prefix}{col}{i}",
                         valueInputOption="RAW",
                         body={"values": [[""]]},
                     ).execute()
 
-                if do_upload(sheets_service, cfg, i, date_h, title_i, tag, download_url, ch["token_file"]):
+                if do_upload(sheets_service, cfg, i, date_h, title_i, tag, download_url, ch["token_file"], auth_headers=auth_headers, sheet_name=sheet_name):
                     upload_count += 1
             except Exception as e:
                 print(f"  再試行チェックエラー: {e}")
@@ -412,7 +598,7 @@ def main():
         print(f"\n[行{i}] {date_h} {title_i}")
         print(f"  アップロード先: {ch['name']}")
 
-        if do_upload(sheets_service, cfg, i, date_h, title_i, tag, download_url, ch["token_file"]):
+        if do_upload(sheets_service, cfg, i, date_h, title_i, tag, download_url, ch["token_file"], auth_headers=auth_headers, sheet_name=sheet_name):
             upload_count += 1
 
     print(f"\n=== 完了: {upload_count}件アップロード ===")
@@ -429,5 +615,10 @@ if __name__ == "__main__":
         setup_auth(load_config())
     elif cmd == "sheet":
         setup_sheet(load_config())
+    elif cmd == "zoom-setup":
+        cfg = load_config()
+        setup_zoom(cfg)
+    elif cmd == "sync":
+        sync_zoom(load_config())
     else:
         main()

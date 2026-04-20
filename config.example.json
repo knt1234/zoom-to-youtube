@@ -22,5 +22,11 @@
       "name": "チャンネル2の説明",
       "token_file": "token_ch2.pkl"
     }
-  ]
+  ],
+  "zoom": {
+    "account_id": "Zoom の Account ID をここに入力",
+    "client_id": "Zoom の Client ID をここに入力",
+    "client_secret": "Zoom の Client Secret をここに入力",
+    "sync_days": 30
+  }
 }
