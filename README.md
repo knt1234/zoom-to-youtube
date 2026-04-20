@@ -265,6 +265,11 @@ python3 ~/Documents/movie-upload/upload.py
 (crontab -l 2>/dev/null; echo "0 9 5,10,15,20,25,30 * * /usr/bin/python3 ~/Documents/movie-upload/upload.py >> ~/Documents/movie-upload/log.txt 2>&1") | crontab -
 ```
 
+> **実行日は自由に変更できます。**
+> 上記コマンドの `5,10,15,20,25,30` の部分を変えることで実行日を調整できます。
+> 例：毎月1日だけ実行したい場合は `5,10,15,20,25,30` を `1` に変更してください。
+> 時刻を変えたい場合は `0 9` の `9` を変更します（例：`0 18` で18時実行）。
+
 設定の確認：
 ```
 crontab -l
