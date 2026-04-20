@@ -257,12 +257,12 @@ python3 ~/Documents/movie-upload/upload.py
 
 実行前にスプレッドシートのK列にタグを入力しておいてください。
 
-### 毎月自動で実行する（例：毎月15日 朝9時）
+### 毎月自動で実行する（例：毎月5・10・15・20・25・30日 朝9時）
 
 以下のコマンドを1回だけ実行すれば、以降は自動で動きます。
 
 ```
-(crontab -l 2>/dev/null; echo "0 9 15 * * /usr/bin/python3 ~/Documents/movie-upload/upload.py >> ~/Documents/movie-upload/log.txt 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "0 9 5,10,15,20,25,30 * * /usr/bin/python3 ~/Documents/movie-upload/upload.py >> ~/Documents/movie-upload/log.txt 2>&1") | crontab -
 ```
 
 設定の確認：
