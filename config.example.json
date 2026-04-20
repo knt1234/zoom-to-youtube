@@ -1,0 +1,26 @@
+{
+  "spreadsheet_id": "スプレッドシートIDをここに入力",
+  "sheet_id": 0,
+  "max_uploads_per_run": 5,
+  "columns": {
+    "download_url": 4,
+    "youtube_link": 5,
+    "date_for_title": 7,
+    "title": 8,
+    "check": 9,
+    "tag": 10,
+    "uploaded_at": 11
+  },
+  "channels": [
+    {
+      "tag": "CH1",
+      "name": "チャンネル1の説明（例: My Channel @mychannel）",
+      "token_file": "token_ch1.pkl"
+    },
+    {
+      "tag": "CH2",
+      "name": "チャンネル2の説明",
+      "token_file": "token_ch2.pkl"
+    }
+  ]
+}
