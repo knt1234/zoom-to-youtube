@@ -192,7 +192,10 @@ def setup_sheet(cfg):
         body={"values": [["タグ"]]},
     ).execute()
 
+    ZOOM_TRASH_COL = 11  # L列
+
     requests_body = [
+        # K列：タグのドロップダウン
         {
             "setDataValidation": {
                 "range": {
@@ -211,7 +214,30 @@ def setup_sheet(cfg):
                     "strict": True,
                 },
             }
-        }
+        },
+        # L列：Zoom削除フラグのドロップダウン
+        {
+            "setDataValidation": {
+                "range": {
+                    "sheetId": cfg["sheet_id"],
+                    "startRowIndex": 1,
+                    "endRowIndex": 1000,
+                    "startColumnIndex": ZOOM_TRASH_COL,
+                    "endColumnIndex": ZOOM_TRASH_COL + 1,
+                },
+                "rule": {
+                    "condition": {
+                        "type": "ONE_OF_LIST",
+                        "values": [
+                            {"userEnteredValue": "削除OK"},
+                            {"userEnteredValue": "削除済"},
+                        ],
+                    },
+                    "showCustomUi": True,
+                    "strict": False,
+                },
+            }
+        },
     ]
 
     service.spreadsheets().batchUpdate(
@@ -220,6 +246,7 @@ def setup_sheet(cfg):
     ).execute()
 
     print(f"✓ タグ列にドロップダウンを追加しました（{' / '.join(tags)}）")
+    print("✓ L列にZoom削除フラグのドロップダウンを追加しました（削除OK / 削除済）")
 
 
 # ── Zoom API ────────────────────────────────────────────────
@@ -257,6 +284,17 @@ def get_zoom_token(zoom_cfg):
     )
     resp.raise_for_status()
     return resp.json()["access_token"]
+
+
+def trash_zoom_recording(zoom_cfg, meeting_id, recording_id):
+    """Zoom録画をゴミ箱に移動（完全削除はしない）"""
+    access_token = get_zoom_token(zoom_cfg)
+    resp = requests.delete(
+        f"https://api.zoom.us/v2/meetings/{meeting_id}/recordings/{recording_id}",
+        params={"action": "trash"},
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    resp.raise_for_status()
 
 
 def fetch_zoom_recordings(access_token, from_date, to_date):
@@ -316,10 +354,10 @@ def sync_zoom(cfg):
     ).execute()
     existing_rows = result.get("values", [])
 
-    share_url_col = cols["download_url"] - 1  # D列（共有リンク）
-    note_col      = share_url_col - 1         # G列（備考）※D列の2つ前
+    share_url_col = cols["download_url"] - 1  # C列（共有リンク）
+    note_col      = share_url_col - 1         # B列（Zoom録画ID）
 
-    # 既存のZoom録画IDを収集して重複チェック（G列に "zoom:{id}" 形式で保存）
+    # 既存のZoom録画IDを収集して重複チェック（B列に "zoom:{id}" 形式で保存）
     existing_zoom_ids = set()
     for row in existing_rows[1:]:
         if len(row) > note_col and row[note_col].startswith("zoom:"):
@@ -336,9 +374,13 @@ def sync_zoom(cfg):
         if not video_file:
             continue
 
-        recording_id = f"zoom:{video_file.get('id', '')}"
-        if not video_file.get("id"):
+        file_id    = video_file.get("id", "")
+        meeting_id = meeting.get("id", "")
+        if not file_id:
             continue
+
+        # B列保存形式: zoom:{meeting_id}/{recording_file_id}
+        recording_id = f"zoom:{meeting_id}/{file_id}"
 
         # Zoom録画IDで重複チェック（URLが変わっても正確に判定）
         if recording_id in existing_zoom_ids:
@@ -612,6 +654,47 @@ def main():
             upload_count += 1
 
     print(f"\n=== 完了: {upload_count}件アップロード ===")
+
+    # ── L列が「削除OK」の行のZoom録画をゴミ箱に移動 ─────────────
+    ZOOM_TRASH_COL = 11  # L列（index 11）
+    if "zoom" not in cfg:
+        return
+
+    trash_count = 0
+    for i, row in enumerate(rows[1:], 2):
+        while len(row) <= ZOOM_TRASH_COL:
+            row.append("")
+
+        if row[ZOOM_TRASH_COL].strip() != "削除OK":
+            continue
+
+        zoom_id = row[1] if len(row) > 1 else ""  # B列
+        if not zoom_id.startswith("zoom:") or "/" not in zoom_id:
+            print(f"  [行{i}] ゴミ箱スキップ: B列のZoom IDが未設定または旧形式")
+            continue
+
+        _, ids = zoom_id.split(":", 1)
+        meeting_id, recording_file_id = ids.split("/", 1)
+
+        print(f"  [行{i}] Zoom録画をゴミ箱に移動中...")
+        try:
+            trash_zoom_recording(cfg["zoom"], meeting_id, recording_file_id)
+
+            prefix = f"'{sheet_name}'!"
+            sheets_service.spreadsheets().values().update(
+                spreadsheetId=cfg["spreadsheet_id"],
+                range=f"{prefix}L{i}",
+                valueInputOption="RAW",
+                body={"values": [["削除済"]]},
+            ).execute()
+
+            print(f"  [行{i}] ✓ ゴミ箱に移動しました")
+            trash_count += 1
+        except Exception as e:
+            print(f"  [行{i}] ゴミ箱移動エラー: {e}")
+
+    if trash_count:
+        print(f"\n=== Zoom録画 {trash_count}件をゴミ箱に移動しました ===")
 
 
 # ── エントリーポイント ────────────────────────────────────────
