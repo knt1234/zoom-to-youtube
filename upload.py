@@ -297,11 +297,14 @@ def get_zoom_token(zoom_cfg):
     return resp.json()["access_token"]
 
 
-def trash_zoom_recording(zoom_cfg, meeting_id, recording_id):
+def trash_zoom_recording(zoom_cfg, meeting_uuid, recording_file_id):
     """Zoom録画をゴミ箱に移動（完全削除はしない）"""
+    from urllib.parse import quote
+    # ZoomのUUIDは"/"や"//"を含む場合があるため二重URLエンコードが必要
+    encoded_uuid = quote(quote(meeting_uuid, safe=""))
     access_token = get_zoom_token(zoom_cfg)
     resp = requests.delete(
-        f"https://api.zoom.us/v2/meetings/{meeting_id}/recordings/{recording_id}",
+        f"https://api.zoom.us/v2/meetings/{encoded_uuid}/recordings/{recording_file_id}",
         params={"action": "trash"},
         headers={"Authorization": f"Bearer {access_token}"},
     )
@@ -390,13 +393,13 @@ def sync_zoom(cfg):
         if not video_file:
             continue
 
-        file_id    = video_file.get("id", "")
-        meeting_id = meeting.get("id", "")
-        if not file_id:
+        file_id      = video_file.get("id", "")
+        meeting_uuid = meeting.get("uuid", "")   # 定例ミーティング対応のためUUIDを使用
+        if not file_id or not meeting_uuid:
             continue
 
-        # B列保存形式: zoom:{meeting_id}/{recording_file_id}
-        recording_id = f"zoom:{meeting_id}/{file_id}"
+        # B列保存形式: zoom:{meeting_uuid}/{recording_file_id}
+        recording_id = f"zoom:{meeting_uuid}/{file_id}"
 
         # 旧形式の行があれば新形式に更新してスキップ
         if file_id in old_format_rows:
@@ -722,10 +725,22 @@ def main():
             print(f"  [行{i}] ✓ ゴミ箱に移動しました")
             trash_count += 1
         except Exception as e:
-            print(f"  [行{i}] ゴミ箱移動エラー: {e}")
+            if "404" in str(e):
+                # 録画がZoomに存在しない（期限切れ・削除済み）→ 削除済みとしてマーク
+                prefix = f"'{sheet_name}'!"
+                sheets_service.spreadsheets().values().update(
+                    spreadsheetId=cfg["spreadsheet_id"],
+                    range=f"{prefix}L{i}",
+                    valueInputOption="RAW",
+                    body={"values": [["削除済"]]},
+                ).execute()
+                print(f"  [行{i}] Zoomに録画が存在しないため「削除済」にしました")
+                trash_count += 1
+            else:
+                print(f"  [行{i}] ゴミ箱移動エラー: {e}")
 
     if trash_count:
-        print(f"\n=== Zoom録画 {trash_count}件をゴミ箱に移動しました ===")
+        print(f"\n=== {trash_count}件を処理しました ===")
     else:
         print("  削除OK の行はありませんでした")
 
