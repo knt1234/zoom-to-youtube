@@ -354,15 +354,13 @@ def sync_zoom(cfg):
         except ValueError:
             date_fmt = date_str
 
-        topic = meeting.get("topic", "")
-
         new_row = [""] * num_cols
         new_row[0]                      = date_fmt       # A: 日付
         new_row[note_col]               = recording_id   # G: 備考（Zoom録画ID）
         new_row[share_url_col]          = share_url      # D: 共有リンク
         new_row[cols["download_url"]]   = download_url   # E: ダウンロードリンク
         new_row[cols["date_for_title"]] = date_fmt       # H: 日付（タイトル用）
-        new_row[cols["title"]]          = topic          # I: 動画タイトル
+        # I列（動画タイトル）は手動入力のため空欄
 
         sheets_service.spreadsheets().values().append(
             spreadsheetId=cfg["spreadsheet_id"],
@@ -372,7 +370,7 @@ def sync_zoom(cfg):
             body={"values": [new_row]},
         ).execute()
 
-        print(f"  追加: {date_fmt} {topic}")
+        print(f"  追加: {date_fmt}")
         existing_zoom_ids.add(recording_id)
         added += 1
 
