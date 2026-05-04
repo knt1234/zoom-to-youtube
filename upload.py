@@ -316,15 +316,19 @@ def sync_zoom(cfg):
     ).execute()
     existing_rows = result.get("values", [])
 
-    # 既存のダウンロードURL（ベース部分）を収集して重複チェック
-    existing_urls = set()
+    share_url_col = cols["download_url"] - 1  # D列（共有リンク）
+
+    # 既存のダウンロードURL・共有URLを収集して重複チェック
+    existing_download_urls = set()
+    existing_share_urls    = set()
     for row in existing_rows[1:]:
         if len(row) > cols["download_url"] and row[cols["download_url"]]:
-            existing_urls.add(row[cols["download_url"]].split("?")[0])
+            existing_download_urls.add(row[cols["download_url"]].split("?")[0])
+        if len(row) > share_url_col and row[share_url_col]:
+            existing_share_urls.add(row[share_url_col].split("?")[0])
 
-    share_url_col = cols["download_url"] - 1  # D列（共有リンク）
-    num_cols      = cols["uploaded_at"] + 1
-    added         = 0
+    num_cols = cols["uploaded_at"] + 1
+    added    = 0
 
     for meeting in meetings:
         video_file = pick_mp4_file(meeting.get("recording_files", []))
@@ -332,7 +336,14 @@ def sync_zoom(cfg):
             continue
 
         download_url = video_file.get("download_url", "")
-        if not download_url or download_url.split("?")[0] in existing_urls:
+        share_url    = meeting.get("share_url", "")
+
+        # ダウンロードURLまたは共有URLがすでに存在する場合はスキップ
+        if not download_url:
+            continue
+        if download_url.split("?")[0] in existing_download_urls:
+            continue
+        if share_url and share_url.split("?")[0] in existing_share_urls:
             continue
 
         start_time     = meeting.get("start_time", "")
@@ -342,8 +353,7 @@ def sync_zoom(cfg):
         except ValueError:
             date_fmt = date_str
 
-        topic     = meeting.get("topic", "")
-        share_url = meeting.get("share_url", "")
+        topic = meeting.get("topic", "")
 
         new_row = [""] * num_cols
         new_row[0]                      = date_fmt       # A: 日付
@@ -361,7 +371,8 @@ def sync_zoom(cfg):
         ).execute()
 
         print(f"  追加: {date_fmt} {topic}")
-        existing_urls.add(download_url.split("?")[0])
+        existing_download_urls.add(download_url.split("?")[0])
+        existing_share_urls.add(share_url.split("?")[0])
         added += 1
 
     print(f"\n✓ {added}件を追加しました。")
