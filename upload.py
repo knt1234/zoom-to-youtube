@@ -372,15 +372,22 @@ def sync_zoom(cfg):
     share_url_col = cols["download_url"] - 1  # C列（共有リンク）
     note_col      = share_url_col - 1         # B列（Zoom録画ID）
 
-    # 既存のZoom録画IDを収集して重複チェック（B列に "zoom:{id}" 形式で保存）
-    existing_zoom_ids  = set()   # 新形式: zoom:{meeting_id}/{file_id}
-    old_format_rows    = {}      # 旧形式: file_id → 行番号（更新対象）
+    # 既存のZoom録画IDを収集して重複チェック（B列に "zoom:{uuid}/{file_id}" 形式で保存）
+    existing_zoom_ids  = set()   # 新形式: zoom:{meeting_uuid}/{file_id}
+    old_format_rows    = {}      # 旧形式・中間形式: file_id → 行番号（更新対象）
     for idx, row in enumerate(existing_rows[1:], 2):
         if len(row) > note_col and row[note_col].startswith("zoom:"):
-            b_val = row[note_col]
+            b_val     = row[note_col]
+            b_content = b_val[5:]  # "zoom:" を除いた部分
             existing_zoom_ids.add(b_val)
-            if "/" not in b_val:                        # 旧形式（meeting_idなし）
-                old_format_rows[b_val[5:]] = idx        # file_id → 行番号
+            if "/" not in b_content:
+                # 最旧形式: zoom:{file_id}
+                old_format_rows[b_content] = idx
+            else:
+                first_part, file_id_part = b_content.split("/", 1)
+                if first_part.isdigit():
+                    # 中間形式: zoom:{numeric_meeting_id}/{file_id}
+                    old_format_rows[file_id_part] = idx
 
     num_cols = cols["uploaded_at"] + 1
     added    = 0
