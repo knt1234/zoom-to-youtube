@@ -104,6 +104,15 @@ def run_config_wizard():
         token_file = f"token_{tag.lower().replace(' ', '_')}.pkl"
         channels.append({"tag": tag, "name": name, "token_file": token_file})
 
+    # 既存のzoom設定があれば引き継ぐ
+    existing_zoom = {}
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                existing_zoom = json.load(f).get("zoom", {})
+        except Exception:
+            pass
+
     cfg = {
         "spreadsheet_id": spreadsheet_id,
         "sheet_id": sheet_id,
@@ -111,6 +120,8 @@ def run_config_wizard():
         "columns": columns,
         "channels": channels,
     }
+    if existing_zoom:
+        cfg["zoom"] = existing_zoom
 
     save_config(cfg)
     print("\n✓ config.json を保存しました。")
