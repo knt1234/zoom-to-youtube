@@ -556,8 +556,9 @@ def main():
     sheets_service = build("sheets", "v4", credentials=sheets_creds)
     sheet_name = get_sheet_name(sheets_service, cfg["spreadsheet_id"], cfg["sheet_id"])
 
-    # 読み込む最終列をuploaded_atの列に合わせる
-    last_col = chr(ord("A") + cols["uploaded_at"])
+    # L列（Zoom削除フラグ）まで読み込む
+    ZOOM_TRASH_COL = 11  # L列
+    last_col = chr(ord("A") + max(cols["uploaded_at"], ZOOM_TRASH_COL))
     print("スプレッドシートを読み込み中...")
     result = sheets_service.spreadsheets().values().get(
         spreadsheetId=cfg["spreadsheet_id"],
@@ -656,10 +657,10 @@ def main():
     print(f"\n=== 完了: {upload_count}件アップロード ===")
 
     # ── L列が「削除OK」の行のZoom録画をゴミ箱に移動 ─────────────
-    ZOOM_TRASH_COL = 11  # L列（index 11）
     if "zoom" not in cfg:
         return
 
+    print("\nZoom削除フラグをチェック中...")
     trash_count = 0
     for i, row in enumerate(rows[1:], 2):
         while len(row) <= ZOOM_TRASH_COL:
@@ -695,6 +696,8 @@ def main():
 
     if trash_count:
         print(f"\n=== Zoom録画 {trash_count}件をゴミ箱に移動しました ===")
+    else:
+        print("  削除OK の行はありませんでした")
 
 
 # ── エントリーポイント ────────────────────────────────────────
