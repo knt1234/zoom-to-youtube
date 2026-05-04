@@ -317,15 +317,13 @@ def sync_zoom(cfg):
     existing_rows = result.get("values", [])
 
     share_url_col = cols["download_url"] - 1  # D列（共有リンク）
+    note_col      = share_url_col - 1         # G列（備考）※D列の2つ前
 
-    # 既存のダウンロードURL・共有URLを収集して重複チェック
-    existing_download_urls = set()
-    existing_share_urls    = set()
+    # 既存のZoom録画IDを収集して重複チェック（G列に "zoom:{id}" 形式で保存）
+    existing_zoom_ids = set()
     for row in existing_rows[1:]:
-        if len(row) > cols["download_url"] and row[cols["download_url"]]:
-            existing_download_urls.add(row[cols["download_url"]].split("?")[0])
-        if len(row) > share_url_col and row[share_url_col]:
-            existing_share_urls.add(row[share_url_col].split("?")[0])
+        if len(row) > note_col and row[note_col].startswith("zoom:"):
+            existing_zoom_ids.add(row[note_col])
 
     num_cols = cols["uploaded_at"] + 1
     added    = 0
@@ -335,19 +333,19 @@ def sync_zoom(cfg):
         if not video_file:
             continue
 
+        recording_id = f"zoom:{video_file.get('id', '')}"
+        if not video_file.get("id"):
+            continue
+
+        # Zoom録画IDで重複チェック（URLが変わっても正確に判定）
+        if recording_id in existing_zoom_ids:
+            continue
+
         download_url = video_file.get("download_url", "")
         share_url    = meeting.get("share_url", "")
 
-        # ダウンロードURLまたは共有URLがすでに存在する場合はスキップ
-        if not download_url:
-            continue
-        if download_url.split("?")[0] in existing_download_urls:
-            continue
-        if share_url and share_url.split("?")[0] in existing_share_urls:
-            continue
-
-        start_time     = meeting.get("start_time", "")
-        date_str       = start_time[:10] if start_time else ""
+        start_time = meeting.get("start_time", "")
+        date_str   = start_time[:10] if start_time else ""
         try:
             date_fmt = datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y/%m/%d")
         except ValueError:
@@ -357,8 +355,9 @@ def sync_zoom(cfg):
 
         new_row = [""] * num_cols
         new_row[0]                      = date_fmt       # A: 日付
+        new_row[note_col]               = recording_id   # G: 備考（Zoom録画ID）
         new_row[share_url_col]          = share_url      # D: 共有リンク
-        new_row[cols["download_url"]]   = download_url   # E: ダウンロードリンク（トークンなし）
+        new_row[cols["download_url"]]   = download_url   # E: ダウンロードリンク
         new_row[cols["date_for_title"]] = date_fmt       # H: 日付（タイトル用）
         new_row[cols["title"]]          = topic          # I: 動画タイトル
 
@@ -371,8 +370,7 @@ def sync_zoom(cfg):
         ).execute()
 
         print(f"  追加: {date_fmt} {topic}")
-        existing_download_urls.add(download_url.split("?")[0])
-        existing_share_urls.add(share_url.split("?")[0])
+        existing_zoom_ids.add(recording_id)
         added += 1
 
     print(f"\n✓ {added}件を追加しました。")
