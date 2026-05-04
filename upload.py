@@ -297,14 +297,15 @@ def get_zoom_token(zoom_cfg):
     return resp.json()["access_token"]
 
 
-def trash_zoom_recording(zoom_cfg, meeting_uuid, recording_file_id):
-    """Zoom録画をゴミ箱に移動（完全削除はしない）"""
+def trash_zoom_recording(zoom_cfg, meeting_uuid, recording_file_id=None):
+    """Zoom録画をゴミ箱に移動（ミーティング全体・完全削除はしない）"""
     from urllib.parse import quote
     # ZoomのUUIDは"/"や"//"を含む場合があるため二重URLエンコードが必要
     encoded_uuid = quote(quote(meeting_uuid, safe=""))
     access_token = get_zoom_token(zoom_cfg)
+    # ミーティング全体（動画・音声すべて）をゴミ箱に移動
     resp = requests.delete(
-        f"https://api.zoom.us/v2/meetings/{encoded_uuid}/recordings/{recording_file_id}",
+        f"https://api.zoom.us/v2/meetings/{encoded_uuid}/recordings",
         params={"action": "trash"},
         headers={"Authorization": f"Bearer {access_token}"},
     )
