@@ -328,6 +328,9 @@ def sync_zoom(cfg):
     num_cols = cols["uploaded_at"] + 1
     added    = 0
 
+    # 古い日付順（昇順）に並び替え
+    meetings = sorted(meetings, key=lambda m: m.get("start_time", ""))
+
     for meeting in meetings:
         video_file = pick_mp4_file(meeting.get("recording_files", []))
         if not video_file:
