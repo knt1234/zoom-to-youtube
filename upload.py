@@ -369,13 +369,18 @@ def sync_zoom(cfg):
     note_col      = share_url_col - 1         # B列（Zoom録画ID）
 
     # 既存のZoom録画IDを収集して重複チェック（B列に "zoom:{id}" 形式で保存）
-    existing_zoom_ids = set()
-    for row in existing_rows[1:]:
+    existing_zoom_ids  = set()   # 新形式: zoom:{meeting_id}/{file_id}
+    old_format_rows    = {}      # 旧形式: file_id → 行番号（更新対象）
+    for idx, row in enumerate(existing_rows[1:], 2):
         if len(row) > note_col and row[note_col].startswith("zoom:"):
-            existing_zoom_ids.add(row[note_col])
+            b_val = row[note_col]
+            existing_zoom_ids.add(b_val)
+            if "/" not in b_val:                        # 旧形式（meeting_idなし）
+                old_format_rows[b_val[5:]] = idx        # file_id → 行番号
 
     num_cols = cols["uploaded_at"] + 1
     added    = 0
+    updated  = 0
 
     # 古い日付順（昇順）に並び替え
     meetings = sorted(meetings, key=lambda m: m.get("start_time", ""))
@@ -393,7 +398,21 @@ def sync_zoom(cfg):
         # B列保存形式: zoom:{meeting_id}/{recording_file_id}
         recording_id = f"zoom:{meeting_id}/{file_id}"
 
-        # Zoom録画IDで重複チェック（URLが変わっても正確に判定）
+        # 旧形式の行があれば新形式に更新してスキップ
+        if file_id in old_format_rows:
+            row_idx = old_format_rows[file_id]
+            sheets_service.spreadsheets().values().update(
+                spreadsheetId=cfg["spreadsheet_id"],
+                range=f"'{sheet_name}'!B{row_idx}",
+                valueInputOption="RAW",
+                body={"values": [[recording_id]]},
+            ).execute()
+            print(f"  更新: 行{row_idx} のZoom IDを新形式に更新")
+            existing_zoom_ids.add(recording_id)
+            updated += 1
+            continue
+
+        # 新形式で重複チェック
         if recording_id in existing_zoom_ids:
             continue
 
@@ -427,7 +446,7 @@ def sync_zoom(cfg):
         existing_zoom_ids.add(recording_id)
         added += 1
 
-    print(f"\n✓ {added}件を追加しました。")
+    print(f"\n✓ {added}件を追加、{updated}件のZoom IDを新形式に更新しました。")
     if added > 0:
         print("K列にタグを入力してから  python3 upload.py  でアップロードできます。")
 
