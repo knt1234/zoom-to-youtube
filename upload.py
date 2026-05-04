@@ -372,22 +372,22 @@ def sync_zoom(cfg):
     share_url_col = cols["download_url"] - 1  # C列（共有リンク）
     note_col      = share_url_col - 1         # B列（Zoom録画ID）
 
-    # 既存のZoom録画IDを収集して重複チェック（B列に "zoom:{uuid}/{file_id}" 形式で保存）
-    existing_zoom_ids  = set()   # 新形式: zoom:{meeting_uuid}/{file_id}
-    old_format_rows    = {}      # 旧形式・中間形式: file_id → 行番号（更新対象）
+    # 既存のZoom録画IDを収集して重複チェック（B列に "zoom:{uuid}|{file_id}" 形式で保存）
+    # "|" はZoom UUIDに含まれないため安全なセパレーター
+    FILE_ID_RE = re.compile(
+        r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.IGNORECASE
+    )
+    existing_zoom_ids = set()  # 新形式: zoom:{uuid}|{file_id}
+    old_format_rows   = {}     # 旧形式すべて: file_id → 行番号（更新対象）
     for idx, row in enumerate(existing_rows[1:], 2):
         if len(row) > note_col and row[note_col].startswith("zoom:"):
-            b_val     = row[note_col]
-            b_content = b_val[5:]  # "zoom:" を除いた部分
+            b_val = row[note_col]
             existing_zoom_ids.add(b_val)
-            if "/" not in b_content:
-                # 最旧形式: zoom:{file_id}
-                old_format_rows[b_content] = idx
-            else:
-                first_part, file_id_part = b_content.split("/", 1)
-                if first_part.isdigit():
-                    # 中間形式: zoom:{numeric_meeting_id}/{file_id}
-                    old_format_rows[file_id_part] = idx
+            if "|" not in b_val:
+                # 旧形式（最旧・中間・UUID区切り/形式すべて）→ regexでfile_idを抽出
+                match = FILE_ID_RE.search(b_val)
+                if match:
+                    old_format_rows[match.group()] = idx
 
     num_cols = cols["uploaded_at"] + 1
     added    = 0
@@ -406,8 +406,8 @@ def sync_zoom(cfg):
         if not file_id or not meeting_uuid:
             continue
 
-        # B列保存形式: zoom:{meeting_uuid}/{recording_file_id}
-        recording_id = f"zoom:{meeting_uuid}/{file_id}"
+        # B列保存形式: zoom:{meeting_uuid}|{recording_file_id}
+        recording_id = f"zoom:{meeting_uuid}|{file_id}"
 
         # 旧形式の行があれば新形式に更新してスキップ
         if file_id in old_format_rows:
@@ -711,16 +711,16 @@ def main():
             continue
 
         zoom_id = row[1] if len(row) > 1 else ""  # B列
-        if not zoom_id.startswith("zoom:") or "/" not in zoom_id:
+        if not zoom_id.startswith("zoom:") or "|" not in zoom_id:
             print(f"  [行{i}] ゴミ箱スキップ: B列のZoom IDが未設定または旧形式")
             continue
 
-        _, ids = zoom_id.split(":", 1)
-        meeting_id, recording_file_id = ids.split("/", 1)
+        _, ids          = zoom_id.split(":", 1)
+        meeting_uuid, _ = ids.split("|", 1)
 
         print(f"  [行{i}] Zoom録画をゴミ箱に移動中...")
         try:
-            trash_zoom_recording(cfg["zoom"], meeting_id, recording_file_id)
+            trash_zoom_recording(cfg["zoom"], meeting_uuid)
 
             prefix = f"'{sheet_name}'!"
             sheets_service.spreadsheets().values().update(
