@@ -298,12 +298,16 @@ def get_zoom_token(zoom_cfg):
 
 
 def trash_zoom_recording(zoom_cfg, meeting_uuid, recording_file_id=None):
-    """Zoom録画をゴミ箱に移動（ミーティング全体・完全削除はしない）"""
+    """Zoom録画をゴミ箱に移動（動画・音声すべて・完全削除はしない）"""
     from urllib.parse import quote
-    # ZoomのUUIDは"/"や"//"を含む場合があるため二重URLエンコードが必要
-    encoded_uuid = quote(quote(meeting_uuid, safe=""))
+    # Zoom API仕様: UUIDが"/"で始まるか"//"を含む場合のみ二重エンコードが必要
+    if meeting_uuid.startswith("/") or "//" in meeting_uuid:
+        encoded_uuid = quote(quote(meeting_uuid, safe=""))
+    else:
+        encoded_uuid = quote(meeting_uuid, safe="")
     access_token = get_zoom_token(zoom_cfg)
     # ミーティング全体（動画・音声すべて）をゴミ箱に移動
+    # 必要スコープ: cloud_recording:delete:meeting_recording:admin
     resp = requests.delete(
         f"https://api.zoom.us/v2/meetings/{encoded_uuid}/recordings",
         params={"action": "trash"},
@@ -702,6 +706,12 @@ def main():
         return
 
     print("\nZoom削除フラグをチェック中...")
+
+    FILE_ID_RE_TRASH = re.compile(
+        r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.IGNORECASE
+    )
+    old_uuid_map = None  # 旧形式救済用キャッシュ（初回のみZoom APIを呼ぶ）
+
     trash_count = 0
     for i, row in enumerate(rows[1:], 2):
         while len(row) <= ZOOM_TRASH_COL:
@@ -711,21 +721,66 @@ def main():
             continue
 
         zoom_id = row[1] if len(row) > 1 else ""  # B列
-        if not zoom_id.startswith("zoom:") or "|" not in zoom_id:
-            print(f"  [行{i}] ゴミ箱スキップ: B列のZoom IDが未設定または旧形式")
+        if not zoom_id.startswith("zoom:"):
+            print(f"  [行{i}] ゴミ箱スキップ: B列のZoom IDが未設定")
             continue
 
-        _, ids          = zoom_id.split(":", 1)
-        meeting_uuid, _ = ids.split("|", 1)
+        meeting_uuid = None
+
+        if "|" in zoom_id:
+            # 新形式: zoom:{uuid}|{file_id}
+            _, ids                      = zoom_id.split(":", 1)
+            meeting_uuid, b_file_id     = ids.split("|", 1)
+        else:
+            # 旧形式: regexでfile_idを抽出し、Zoom APIで検索
+            match = FILE_ID_RE_TRASH.search(zoom_id)
+            if not match:
+                print(f"  [行{i}] ゴミ箱スキップ: B列のZoom IDを解析できません ({zoom_id!r})")
+                continue
+            file_id = match.group()
+
+            # 旧形式キャッシュを遅延ロード（初回のみ）
+            if old_uuid_map is None:
+                print("  旧形式B列の救済: Zoom録画を90日分検索中...")
+                _tmp_token  = get_zoom_token(cfg["zoom"])
+                _to_date    = datetime.now().strftime("%Y-%m-%d")
+                _from_date  = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+                _rec_data   = fetch_zoom_recordings(_tmp_token, _from_date, _to_date)
+                old_uuid_map = {}
+                for _m in _rec_data.get("meetings", []):
+                    for _f in _m.get("recording_files", []):
+                        _fid = _f.get("id", "")
+                        if _fid:
+                            old_uuid_map[_fid] = _m.get("uuid", "")
+                print(f"  {len(old_uuid_map)}件の録画ファイルを取得しました")
+
+            meeting_uuid = old_uuid_map.get(file_id)
+            if not meeting_uuid:
+                print(f"  [行{i}] ゴミ箱スキップ: Zoom上で録画が見つかりません（90日以上前または削除済みの可能性）")
+                continue
+
+            b_file_id = file_id  # フォールバック用
+
+            # B列を新形式に更新（次回から高速化）
+            new_zoom_id = f"zoom:{meeting_uuid}|{file_id}"
+            sheets_service.spreadsheets().values().update(
+                spreadsheetId=cfg["spreadsheet_id"],
+                range=f"'{sheet_name}'!B{i}",
+                valueInputOption="RAW",
+                body={"values": [[new_zoom_id]]},
+            ).execute()
+            print(f"  [行{i}] B列を新形式に更新しました")
+
+        if not meeting_uuid:
+            continue
 
         print(f"  [行{i}] Zoom録画をゴミ箱に移動中...")
         try:
-            trash_zoom_recording(cfg["zoom"], meeting_uuid)
+            trash_zoom_recording(cfg["zoom"], meeting_uuid, b_file_id)
 
-            prefix = f"'{sheet_name}'!"
             sheets_service.spreadsheets().values().update(
                 spreadsheetId=cfg["spreadsheet_id"],
-                range=f"{prefix}L{i}",
+                range=f"'{sheet_name}'!L{i}",
                 valueInputOption="RAW",
                 body={"values": [["削除済"]]},
             ).execute()
@@ -735,17 +790,23 @@ def main():
         except Exception as e:
             if "404" in str(e):
                 # 録画がZoomに存在しない（期限切れ・削除済み）→ 削除済みとしてマーク
-                prefix = f"'{sheet_name}'!"
                 sheets_service.spreadsheets().values().update(
                     spreadsheetId=cfg["spreadsheet_id"],
-                    range=f"{prefix}L{i}",
+                    range=f"'{sheet_name}'!L{i}",
                     valueInputOption="RAW",
                     body={"values": [["削除済"]]},
                 ).execute()
                 print(f"  [行{i}] Zoomに録画が存在しないため「削除済」にしました")
                 trash_count += 1
             else:
-                print(f"  [行{i}] ゴミ箱移動エラー: {e}")
+                # Zoomエラーの詳細を表示（原因特定のため）
+                zoom_err = ""
+                if hasattr(e, "response") and e.response is not None:
+                    try:
+                        zoom_err = f" → Zoom詳細: {e.response.json()}"
+                    except Exception:
+                        zoom_err = f" → レスポンス: {e.response.text[:300]}"
+                print(f"  [行{i}] ゴミ箱移動エラー: {e}{zoom_err}")
 
     if trash_count:
         print(f"\n=== {trash_count}件を処理しました ===")
