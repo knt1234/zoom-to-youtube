@@ -82,13 +82,13 @@ def run_config_wizard():
         return (int(val) - 1) if val.isdigit() else (default - 1)
 
     columns = {
-        "download_url":   ask_col("ダウンロードリンク", 5),
-        "youtube_link":   ask_col("YouTubeリンク（自動入力）", 6),
-        "date_for_title": ask_col("動画タイトル用の日付", 8),
-        "title":          ask_col("動画タイトル", 9),
-        "check":          ask_col("チェック（自動入力）", 10),
-        "tag":            ask_col("タグ（アップロード先）", 11),
-        "uploaded_at":    ask_col("アップロード日時（自動入力）", 12),
+        "download_url":   ask_col("ダウンロードリンク（D列）", 4),
+        "youtube_link":   ask_col("YouTubeリンク（E列・自動入力）", 5),
+        "date_for_title": ask_col("動画タイトル用の日付（G列）", 7),
+        "title":          ask_col("動画タイトル（H列）", 8),
+        "check":          ask_col("処理完了（I列・自動入力）", 9),
+        "tag":            ask_col("タグ（J列・アップロード先）", 10),
+        "uploaded_at":    ask_col("アップロード日時（K列・自動入力）", 11),
     }
 
     # チャンネル設定
@@ -99,8 +99,8 @@ def run_config_wizard():
     channels = []
     for i in range(num):
         print(f"\nチャンネル {i + 1} / {num}")
-        tag = input("  タグ名（例: ESL, NCA, 自分用）: ").strip()
-        name = input("  チャンネルの説明（例: ESL事務局 @ESL-jimukyoku）: ").strip()
+        tag = input("  タグ名（例: CH1, メイン, 勉強会）: ").strip()
+        name = input("  チャンネルの説明（例: メインチャンネル @mychannel）: ").strip()
         token_file = f"token_{tag.lower().replace(' ', '_')}.pkl"
         channels.append({"tag": tag, "name": name, "token_file": token_file})
 
@@ -270,7 +270,7 @@ def setup_zoom(cfg):
     account_id    = input("Account ID    : ").strip()
     client_id     = input("Client ID     : ").strip()
     client_secret = input("Client Secret : ").strip()
-    days = input("何日前まで遡って録画を取得しますか？（デフォルト: 30）: ").strip()
+    days = input("何日前まで遡って録画を取得しますか？（デフォルト: 30 / 0 = 全期間）: ").strip()
     days = int(days) if days.isdigit() else 30
 
     cfg["zoom"] = {
@@ -326,6 +326,22 @@ def fetch_zoom_recordings(access_token, from_date, to_date):
     return resp.json()
 
 
+def fetch_zoom_recordings_range(access_token, from_date_dt, to_date_dt):
+    """指定期間の録画を30日ごとに分割して取得（Zoom APIの制限対応）"""
+    all_meetings = []
+    chunk_end = to_date_dt
+    while chunk_end > from_date_dt:
+        chunk_start = max(chunk_end - timedelta(days=29), from_date_dt)
+        data = fetch_zoom_recordings(
+            access_token,
+            chunk_start.strftime("%Y-%m-%d"),
+            chunk_end.strftime("%Y-%m-%d"),
+        )
+        all_meetings.extend(data.get("meetings", []))
+        chunk_end = chunk_start - timedelta(days=1)
+    return all_meetings
+
+
 def pick_mp4_file(recording_files):
     """優先順位: shared_screen_with_speaker_view > active_speaker > gallery_view > 任意MP4"""
     for priority in ["shared_screen_with_speaker_view", "active_speaker", "gallery_view"]:
@@ -349,12 +365,15 @@ def sync_zoom(cfg):
     access_token = get_zoom_token(zoom_cfg)
 
     days = zoom_cfg.get("sync_days", 30)
-    to_date   = datetime.now().strftime("%Y-%m-%d")
-    from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    print(f"{from_date} 〜 {to_date} の録画を取得中...")
+    to_date_dt   = datetime.now()
+    if days == 0:
+        from_date_dt = datetime(2020, 1, 1)
+        print("全期間の録画を取得中（時間がかかる場合があります）...")
+    else:
+        from_date_dt = to_date_dt - timedelta(days=days)
+        print(f"{from_date_dt.strftime('%Y-%m-%d')} 〜 {to_date_dt.strftime('%Y-%m-%d')} の録画を取得中...")
 
-    data = fetch_zoom_recordings(access_token, from_date, to_date)
-    meetings = data.get("meetings", [])
+    meetings = fetch_zoom_recordings_range(access_token, from_date_dt, to_date_dt)
     if not meetings:
         print("録画が見つかりませんでした。")
         return
