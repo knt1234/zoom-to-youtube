@@ -131,7 +131,7 @@ python3 --version
 
 ### GitHubからファイルをダウンロードする
 
-1. ブラウザで [このリポジトリのGitHubページ](https://github.com/knt1234/movie-upload) を開く
+1. ブラウザで [このリポジトリのGitHubページ](https://github.com/knt1234/zoom-to-youtube) を開く
 
 ![GitHubリポジトリのトップページ](images/01-02_github_repo.png)
 *▲ GitHubリポジトリのトップページ*
