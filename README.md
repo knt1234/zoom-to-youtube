@@ -690,10 +690,10 @@ echo $HOME
 すると、以下のような形式で表示されます。
 
 ```
-/Users/Kenta
+/Users/yamada
 ```
 
-この例では `Kenta` がユーザー名です。`/Users/` のあとに続く文字列をメモしておいてください。
+この例では `yamada` がユーザー名です。`/Users/` のあとに続く文字列をメモしておいてください。
 
 #### 3. 以下の1行を追加する
 
@@ -703,10 +703,10 @@ echo $HOME
 
 `あなたのユーザー名` の部分を、手順 2. で確認した文字列に書き換えてください。
 
-**設定例（ユーザー名が `Kenta` の場合）：**
+**設定例（ユーザー名が `yamada` の場合）：**
 
 ```
-0 9 5,10,15,20,25,30 * * /usr/bin/python3 /Users/Kenta/Documents/movie-upload/upload.py >> /Users/Kenta/Documents/movie-upload/log.txt 2>&1
+0 9 5,10,15,20,25,30 * * /usr/bin/python3 /Users/yamada/Documents/movie-upload/upload.py >> /Users/yamada/Documents/movie-upload/log.txt 2>&1
 ```
 
 この設定の意味：
